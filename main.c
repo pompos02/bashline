@@ -32,6 +32,8 @@ typedef struct
 } Buffer;
 
 static Buffer prompt;
+static git_repository* repo;
+static git_reference* head;
 
 typedef struct
 {
@@ -189,8 +191,7 @@ collect_status(git_repository* repo, StatusCounts* counts)
     if (status & GIT_STATUS_WT_DELETED) counts->deleted++;
     if (status & GIT_STATUS_INDEX_RENAMED) counts->renamed++;
     if (status & GIT_STATUS_WT_RENAMED) counts->renamed++;
-    if (status & (GIT_STATUS_INDEX_NEW | GIT_STATUS_INDEX_MODIFIED))
-      counts->staged++;
+    if (status & (GIT_STATUS_INDEX_NEW | GIT_STATUS_INDEX_MODIFIED)) counts->staged++;
     if (status & GIT_STATUS_WT_MODIFIED) counts->modified++;
     if (status & GIT_STATUS_WT_NEW) counts->untracked++;
   }
@@ -224,32 +225,28 @@ append_divergence(Buffer* out, git_repository* repo, git_reference* head)
     buffer_printf(out, "⇣%zu", behind);
 }
 
-static int
-open_repository(git_repository** repo, const char* pwd)
+static bool
+open_repository(const char* pwd)
 {
   git_buf discovered = GIT_BUF_INIT;
-  int result;
+  bool opened;
 
-  result = git_repository_discover(&discovered, pwd, 0, NULL);
-  if (result == 0) result = git_repository_open(repo, discovered.ptr);
+  opened = git_repository_discover(&discovered, pwd, 0, NULL) == 0 &&
+           git_repository_open(&repo, discovered.ptr) == 0;
   git_buf_dispose(&discovered);
-  return result;
+  return opened;
 }
 
 static bool
-append_git_branch(const char* pwd)
+append_git_branch(void)
 {
-  git_repository* repo = NULL;
-  git_reference* head = NULL;
   git_reference* head_symbolic = NULL;
   const char* branch = NULL;
   char detached_oid[8] = {0};
   bool found = false;
 
-  if (open_repository(&repo, pwd) < 0) goto done;
-
   if (git_repository_head(&head, repo) == 0)
-  {
+  { /* HEAD resolves to a commit or is detached to a commit */
     if (git_repository_head_detached(repo) == 1)
     {
       const git_oid* oid = git_reference_target(head);
@@ -263,7 +260,7 @@ append_git_branch(const char* pwd)
     }
   }
   else if (git_reference_lookup(&head_symbolic, repo, "HEAD") == 0)
-  {
+  { /* HEAD maybe a branch without a commit */
     const char* target = git_reference_symbolic_target(head_symbolic);
     const char* prefix = "refs/heads/";
 
@@ -275,14 +272,11 @@ append_git_branch(const char* pwd)
   buffer_append(&prompt, COLOR_DEFAULT "-[git://" COLOR_ACCENT);
   append_ps1_escaped(&prompt, branch);
   if (detached_oid[0])
-    buffer_printf(&prompt, COLOR_DEFAULT " " COLOR_DANGER "%s",
-                  detached_oid);
+    buffer_printf(&prompt, COLOR_DEFAULT " " COLOR_DANGER "%s", detached_oid);
   found = true;
 
 done:
   git_reference_free(head_symbolic);
-  git_reference_free(head);
-  git_repository_free(repo);
   return found;
 }
 
@@ -293,19 +287,14 @@ append_count(Buffer* out, const char* symbol, size_t count)
 }
 
 static void
-write_git_details(int fd, const char* pwd)
+write_git_details(int fd)
 {
-  git_repository* repo = NULL;
-  git_reference* head = NULL;
   StatusCounts counts = {0};
   Buffer state = {0};
   size_t stash_count = 0;
   size_t prefix_length;
 
-  if (open_repository(&repo, pwd) < 0 ||
-      collect_status(repo, &counts) < 0)
-    goto done;
-  git_repository_head(&head, repo);
+  if (collect_status(repo, &counts) < 0) return;
   git_stash_foreach(repo, stash_counter, &stash_count);
 
   buffer_append(&state, COLOR_DANGER " ");
@@ -321,10 +310,7 @@ write_git_details(int fd, const char* pwd)
 
   if (state.len > prefix_length) write_all(fd, state.data, state.len);
 
-done:
   buffer_free(&state);
-  git_reference_free(head);
-  git_repository_free(repo);
 }
 
 static void
@@ -354,27 +340,23 @@ monotonic_ms(void)
 }
 
 static void
-collect_git_details(Buffer* details, const char* pwd, int timeout)
+collect_git_details(int timeout)
 {
   int pipefd[2];
   pid_t child;
   int64_t deadline;
+  size_t prompt_start = prompt.len;
   bool complete = false;
   char chunk[1024];
   int ready = 0;
 
   if (pipe2(pipefd, O_CLOEXEC) < 0) return;
   child = fork();
-  if (child < 0)
-  {
-    close(pipefd[0]);
-    close(pipefd[1]);
-    return;
-  }
+  if (child < 0) { close(pipefd[0]); close(pipefd[1]); return; }
   if (child == 0)
   {
     close(pipefd[0]);
-    write_git_details(pipefd[1], pwd);
+    write_git_details(pipefd[1]);
     close(pipefd[1]);
     _exit(0);
   }
@@ -382,7 +364,7 @@ collect_git_details(Buffer* details, const char* pwd, int timeout)
   deadline = timeout ? monotonic_ms() + timeout : 0;
 
   for (;;)
-  {
+  { /* wait for the child output */
     struct pollfd descriptor = {.fd = pipefd[0], .events = POLLIN | POLLHUP};
     int64_t remaining = deadline ? deadline - monotonic_ms() : -1;
 
@@ -393,11 +375,10 @@ collect_git_details(Buffer* details, const char* pwd, int timeout)
   if (ready > 0)
   {
     for (;;)
-    {
+    { /* read the output of the child */
       ssize_t length = read(pipefd[0], chunk, sizeof(chunk));
 
-      if (length > 0)
-        buffer_append_n(details, chunk, (size_t)length);
+      if (length > 0) buffer_append_n(&prompt, chunk, (size_t)length);
       else if (length == 0)
       {
         complete = true;
@@ -410,27 +391,36 @@ collect_git_details(Buffer* details, const char* pwd, int timeout)
   close(pipefd[0]);
   if (!complete)
   {
-    buffer_free(details);
+    prompt.len = prompt_start;
+    prompt.data[prompt.len] = '\0';
     kill(child, SIGKILL);
   }
   while (waitpid(child, NULL, 0) < 0 && errno == EINTR);
 }
 
+static void
+close_repository(void)
+{
+  git_reference_free(head);
+  git_repository_free(repo);
+  head = NULL;
+  repo = NULL;
+}
+
 static int
 print_prompt(const char* pwd, int last_status)
 {
-  Buffer details = {0};
   int result;
 
   buffer_append(&prompt, COLOR_DEFAULT "┌[\\u@\\h]-(" COLOR_ACCENT "\\w" COLOR_DEFAULT ")");
   if (git_libgit2_init() >= 0)
   {
-    if (append_git_branch(pwd))
+    if (open_repository(pwd) && append_git_branch())
     {
-      collect_git_details(&details, pwd, timeout_ms());
-      buffer_append_n(&prompt, details.data, details.len);
+      collect_git_details(timeout_ms());
       buffer_append(&prompt, COLOR_DEFAULT "]");
     }
+    close_repository();
     git_libgit2_shutdown();
   }
   if (last_status != 0)
@@ -445,7 +435,6 @@ print_prompt(const char* pwd, int last_status)
              : EXIT_FAILURE;
 
   buffer_free(&prompt);
-  buffer_free(&details);
   return result;
 }
 
