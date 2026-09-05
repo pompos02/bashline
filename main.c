@@ -134,6 +134,18 @@ append_ps1_escaped(Buffer* buf, const char* text)
   }
 }
 
+static void
+append_ps1_escaped_n(Buffer* buf, const char* text, size_t n)
+{
+  for (size_t i = 0; i < n && text[i]; ++i)
+  {
+    if (text[i] == '\\' || text[i] == '$' || text[i] == '`')
+      buffer_append_n(buf, "\\", 1);
+    buffer_append_n(buf, &text[i], 1);
+  }
+}
+
+
 static char*
 current_directory(void)
 {
@@ -143,18 +155,48 @@ current_directory(void)
   return getcwd(NULL, 0);
 }
 
-static const char*
-short_pwd()
+static void
+append_short_pwd()
 {
+  const char* path = g_state.pwd;
   const char* home = getenv("HOME");
-  const char* path = current_directory();
-  return "";
+  const char* part;
+  if (home && home[0] && strcmp(home, "/") != 0 &&
+      (strcmp(g_state.pwd, home) == 0 || (strncmp(g_state.pwd, home, strlen(home)) == 0 && g_state.pwd[strlen(home)] == '/')))
+  { /* pwd contains home */
+    path += strlen(home);
+    buffer_append(&g_state.prompt, "~");
+    if (*path == '\0') return; // exactly at home return
+  }
+
+  while (*path == '/') path++;
+  if (*path == '\0') { buffer_append(&g_state.prompt, "/"); return; }
+  part = path;
+  while (*part)
+  {
+    size_t len = strcspn(part, "/");
+    const char* next = part + len;
+
+    while (*next == '/') next++;
+
+    buffer_append(&g_state.prompt, "/");
+
+    if (*next == '\0')
+    { /* append the final full dir */
+      append_ps1_escaped_n(&g_state.prompt, part, len);
+      break;
+    }
+
+    size_t shown = part[0] == '.' && len > 1 ? 2 : 1;
+    append_ps1_escaped_n(&g_state.prompt, part, shown);
+    part = next;
+  }
 }
 
 static int
 timeout_ms(void)
 {
-  const char* value = getenv("PROMPT_NATIVE_TIMEOUT_MS");
+  const char* value = getenv("PROMPT_TIMEOUT_MS");
   char* end;
   long parsed;
 
@@ -167,14 +209,10 @@ timeout_ms(void)
 }
 
 static int
-stash_counter(size_t index, const char* message, const git_oid* oid,
-              void* payload)
-{
+stash_counter(size_t index, const char* message, const git_oid* oid, void* payload)
+{ /* we only care about the count of the stashes, cast to void the unused */
   size_t* count = payload;
-
-  (void)index;
-  (void)message;
-  (void)oid;
+  (void)index; (void)message; (void)oid;
   (*count)++;
   return 0;
 }
@@ -187,10 +225,10 @@ collect_status(git_repository* repo, StatusCounts* counts)
   size_t i;
 
   options.version = GIT_STATUS_OPTIONS_VERSION;
-  options.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
-  options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
-                  GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX |
-                  GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
+  options.show    = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+  options.flags   = GIT_STATUS_OPT_INCLUDE_UNTRACKED      |
+                    GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX  |
+                    GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
   if (git_status_list_new(&list, repo, &options) < 0) return -1;
 
   for (i = 0; i < git_status_list_entrycount(list); i++)
@@ -198,17 +236,13 @@ collect_status(git_repository* repo, StatusCounts* counts)
     const git_status_entry* entry = git_status_byindex(list, i);
     unsigned int status = entry->status;
 
-    if (status & GIT_STATUS_CONFLICTED)
-    {
-      counts->conflicted++;
-      continue;
-    }
+    if (status & GIT_STATUS_CONFLICTED) { counts->conflicted++; continue; }
     if (status & GIT_STATUS_INDEX_DELETED) counts->deleted++;
     if (status & GIT_STATUS_WT_DELETED) counts->deleted++;
     if (status & GIT_STATUS_INDEX_RENAMED) counts->renamed++;
     if (status & GIT_STATUS_WT_RENAMED) counts->renamed++;
-    if (status & (GIT_STATUS_INDEX_NEW | GIT_STATUS_INDEX_MODIFIED)) counts->staged++;
-    if (status & GIT_STATUS_WT_MODIFIED) counts->modified++;
+    if (status & (GIT_STATUS_INDEX_NEW | GIT_STATUS_INDEX_MODIFIED | GIT_STATUS_INDEX_TYPECHANGE)) counts->staged++;
+    if (status & (GIT_STATUS_WT_MODIFIED | GIT_STATUS_WT_TYPECHANGE)) counts->modified++;
     if (status & GIT_STATUS_WT_NEW) counts->untracked++;
   }
 
@@ -231,9 +265,9 @@ append_divergence(Buffer* out, git_repository* repo, git_reference* head)
   if (upstream_oid) git_graph_ahead_behind(&ahead, &behind, repo, local_oid, upstream_oid);
   git_reference_free(upstream);
 
-  if (ahead && behind) buffer_printf(out, "⇕⇡%zu⇣%zu", ahead, behind);
-  else if (ahead) buffer_printf(out, "⇡%zu", ahead);
-  else if (behind) buffer_printf(out, "⇣%zu", behind);
+  if (ahead && behind)  buffer_printf(out, "⇕⇡%zu⇣%zu", ahead, behind);
+  else if (ahead)       buffer_printf(out, "⇡%zu", ahead);
+  else if (behind)      buffer_printf(out, "⇣%zu", behind);
 }
 
 static bool
@@ -242,8 +276,7 @@ open_repository(void)
   git_buf discovered = GIT_BUF_INIT;
   bool opened;
 
-  opened = git_repository_discover(&discovered, g_state.pwd, 0, NULL) == 0 &&
-           git_repository_open(&g_state.repo, discovered.ptr) == 0;
+  opened = git_repository_discover(&discovered, g_state.pwd, 0, NULL) == 0 && git_repository_open(&g_state.repo, discovered.ptr) == 0;
   git_buf_dispose(&discovered);
   return opened;
 }
@@ -285,7 +318,6 @@ append_git_branch(void)
     if (git_repository_head_detached(g_state.repo) == 1)
     {
       const git_oid* oid = git_reference_target(g_state.head);
-
       branch = "HEAD";
       if (oid) git_oid_tostr(detached_oid, sizeof(detached_oid), oid);
     }
@@ -298,19 +330,16 @@ append_git_branch(void)
   { /* HEAD maybe a branch without a commit */
     const char* target = git_reference_symbolic_target(head_symbolic);
     const char* prefix = "refs/heads/";
-
     if (target && strncmp(target, prefix, strlen(prefix)) == 0)
       branch = target + strlen(prefix);
   }
-  if (!branch) goto done;
-
-  buffer_append(&g_state.prompt, COLOR_DEFAULT "-[git://" COLOR_ACCENT);
-  append_ps1_escaped(&g_state.prompt, branch);
-  if (detached_oid[0])
-    buffer_printf(&g_state.prompt, COLOR_DEFAULT " " COLOR_DANGER "%s", detached_oid);
-  found = true;
-
-done:
+  if (branch)
+  {
+    buffer_append(&g_state.prompt, COLOR_DEFAULT "-[git://" COLOR_ACCENT);
+    append_ps1_escaped(&g_state.prompt, branch);
+    if (detached_oid[0]) buffer_printf(&g_state.prompt, COLOR_DEFAULT " " COLOR_DANGER "%s", detached_oid);
+    found = true;
+  }
   git_reference_free(head_symbolic);
   return found;
 }
@@ -323,7 +352,7 @@ append_count(Buffer* out, const char* symbol, size_t count)
 
 static void
 write_git_details(int fd)
-{
+{ /* this function runs on a child process */
   StatusCounts counts = {0};
   Buffer state = {0};
   size_t stash_count = 0;
@@ -408,19 +437,13 @@ collect_git_details(int timeout)
     if (ready >= 0 || errno != EINTR) break;
   }
   if (ready > 0)
-  {
+  { /* the child process produced an output */
     for (;;)
     { /* read the output of the child */
       ssize_t length = read(pipefd[0], chunk, sizeof(chunk));
-
       if (length > 0) buffer_append_n(&g_state.prompt, chunk, (size_t)length);
-      else if (length == 0)
-      {
-        complete = true;
-        break;
-      }
-      else if (errno != EINTR)
-        break;
+      else if (length == 0) { complete = true; break; }
+      else if (errno != EINTR) break;
     }
   }
   close(pipefd[0]);
@@ -428,6 +451,7 @@ collect_git_details(int timeout)
   {
     g_state.prompt.len = prompt_start;
     g_state.prompt.data[g_state.prompt.len] = '\0';
+    buffer_append(&g_state.prompt, "[!!]");
     kill(child, SIGKILL);
   }
   while (waitpid(child, NULL, 0) < 0 && errno == EINTR);
@@ -438,25 +462,20 @@ print_prompt(int last_status)
 {
   int result;
 
-  /* append user and hostname */
-  buffer_append(&g_state.prompt, COLOR_DEFAULT "┌[\\u@\\h]-(" COLOR_ACCENT "\\w" COLOR_DEFAULT ")");
+  /* append user, hostname and pwd */
+  buffer_append(&g_state.prompt, COLOR_DEFAULT "┌[\\u@\\h]-(" COLOR_ACCENT); append_short_pwd(); buffer_append(&g_state.prompt, COLOR_DEFAULT ")");
   if (g_state.repo && append_git_branch())
   {
     collect_git_details(timeout_ms());
     buffer_append(&g_state.prompt, COLOR_DEFAULT "]");
   }
   if (last_status != 0)
-    buffer_printf(&g_state.prompt,
-                  COLOR_DEFAULT "(" COLOR_DANGER "%d" COLOR_DEFAULT ")",
-                  last_status);
-  buffer_append(&g_state.prompt, last_status ? "\n" COLOR_DEFAULT "└" COLOR_DANGER
-                                       "> " COLOR_RESET
-                                     : "\n" COLOR_DEFAULT "└> " COLOR_RESET);
-  result = fwrite(g_state.prompt.data, 1, g_state.prompt.len, stdout) == g_state.prompt.len
-             ? EXIT_SUCCESS
-             : EXIT_FAILURE;
-
-  return result;
+    buffer_printf(&g_state.prompt, COLOR_DEFAULT "(" COLOR_DANGER "%d" COLOR_DEFAULT ")", last_status);
+  buffer_append(&g_state.prompt, "\n" COLOR_DEFAULT "└");
+  if (last_status != 0) buffer_append(&g_state.prompt, COLOR_DANGER);
+  buffer_append(&g_state.prompt, "> " COLOR_RESET);
+  result = fwrite(g_state.prompt.data, 1, g_state.prompt.len, stdout) == g_state.prompt.len;
+  return result ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 int
@@ -475,7 +494,7 @@ main(int argc, char** argv)
   }
   if (!state_init())
   {
-    perror("prompt-native: current directory");
+    perror("prompt: current directory");
     return EXIT_FAILURE;
   }
   result = print_prompt((int)status);

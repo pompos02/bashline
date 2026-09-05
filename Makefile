@@ -1,7 +1,7 @@
 LIBGIT2 = vendor/libgit2/build/libgit2.a
 
 prompt: main.c $(LIBGIT2)
-	$(CC) -O2 -Ivendor/libgit2/include main.c $(LIBGIT2) -o prompt
+	$(CC) -O2 -Ivendor/libgit2/include -Wall -Wextra -Wpedantic -Wconversion -Wshadow main.c $(LIBGIT2) -o prompt
 
 debug: main.c $(LIBGIT2)
 	$(CC) -g -O0 -Ivendor/libgit2/include main.c $(LIBGIT2) -o promptdbg
