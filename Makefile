@@ -1,5 +1,9 @@
 LIBGIT2 = vendor/libgit2/build/libgit2.a
 
+.PHONY: all prompt debug clean
+
+all: prompt
+
 prompt: main.c $(LIBGIT2)
 	$(CC) -O2 -Ivendor/libgit2/include -Wall -Wextra -Wpedantic -Wconversion -Wshadow main.c $(LIBGIT2) -o prompt
 
@@ -15,4 +19,4 @@ $(LIBGIT2):
 	cmake --build vendor/libgit2/build --target libgit2package --parallel
 
 clean:
-	rm -rf prompt prompt promptdbg
+	rm -f prompt promptdbg

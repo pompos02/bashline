@@ -310,6 +310,7 @@ append_git_branch(void)
 {
   git_reference* head_symbolic = NULL;
   const char* branch = NULL;
+  const char* operation = NULL;
   char detached_oid[8] = {0};
   bool found = false;
 
@@ -335,9 +336,25 @@ append_git_branch(void)
   }
   if (branch)
   {
+    switch (git_repository_state(g_state.repo))
+    {
+      case GIT_REPOSITORY_STATE_MERGE:                    operation = "MERGE"; break;
+      case GIT_REPOSITORY_STATE_REVERT:
+      case GIT_REPOSITORY_STATE_REVERT_SEQUENCE:          operation = "REVERT"; break;
+      case GIT_REPOSITORY_STATE_CHERRYPICK:
+      case GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE:      operation = "CHERRY-PICK"; break;
+      case GIT_REPOSITORY_STATE_BISECT:                   operation = "BISECT"; break;
+      case GIT_REPOSITORY_STATE_REBASE:
+      case GIT_REPOSITORY_STATE_REBASE_INTERACTIVE:
+      case GIT_REPOSITORY_STATE_REBASE_MERGE:
+      case GIT_REPOSITORY_STATE_APPLY_MAILBOX_OR_REBASE:  operation = "REBASE"; break;
+      case GIT_REPOSITORY_STATE_APPLY_MAILBOX:            operation = "AM"; break;
+      default: break;
+    }
     buffer_append(&g_state.prompt, COLOR_DEFAULT "-[git://" COLOR_ACCENT);
     append_ps1_escaped(&g_state.prompt, branch);
     if (detached_oid[0]) buffer_printf(&g_state.prompt, COLOR_DEFAULT " " COLOR_DANGER "%s", detached_oid);
+    if (operation) buffer_printf(&g_state.prompt, COLOR_DEFAULT " " COLOR_DANGER "%s", operation);
     found = true;
   }
   git_reference_free(head_symbolic);
