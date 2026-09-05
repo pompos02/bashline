@@ -1,14 +1,14 @@
 LIBGIT2 = vendor/libgit2/build/libgit2.a
 
-.PHONY: all prompt debug clean
+.PHONY: all bashline debug clean
 
-all: prompt
+all: bashline
 
-prompt: main.c $(LIBGIT2)
-	$(CC) -O2 -Ivendor/libgit2/include -Wall -Wextra -Wpedantic -Wconversion -Wshadow main.c $(LIBGIT2) -o prompt
+bashline: main.c $(LIBGIT2)
+	$(CC) -O2 -Ivendor/libgit2/include -Wall -Wextra -Wpedantic -Wconversion -Wshadow main.c $(LIBGIT2) -o bashline
 
 debug: main.c $(LIBGIT2)
-	$(CC) -g -O0 -Ivendor/libgit2/include main.c $(LIBGIT2) -o promptdbg
+	$(CC) -g -O0 -Ivendor/libgit2/include main.c $(LIBGIT2) -o bashlinedbg
 
 $(LIBGIT2):
 	cmake -S vendor/libgit2 -B vendor/libgit2/build -DCMAKE_BUILD_TYPE=Release \
@@ -19,4 +19,4 @@ $(LIBGIT2):
 	cmake --build vendor/libgit2/build --target libgit2package --parallel
 
 clean:
-	rm -f prompt promptdbg
+	rm -f bashline bashlinedbg

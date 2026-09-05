@@ -196,7 +196,7 @@ append_short_pwd()
 static int
 timeout_ms(void)
 {
-  const char* value = getenv("PROMPT_TIMEOUT_MS");
+  const char* value = getenv("BASHLINE_TIMEOUT_MS");
   char* end;
   long parsed;
 
@@ -511,7 +511,7 @@ main(int argc, char** argv)
   }
   if (!state_init())
   {
-    perror("prompt: current directory");
+    perror("bashline: current directory");
     return EXIT_FAILURE;
   }
   result = print_prompt((int)status);
