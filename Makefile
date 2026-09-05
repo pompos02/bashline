@@ -1,6 +1,6 @@
 LIBGIT2 = vendor/libgit2/build/libgit2.a
 
-.PHONY: all bashline debug clean
+.PHONY: all bashline debug setup clean
 
 all: bashline
 
@@ -9,6 +9,19 @@ bashline: main.c $(LIBGIT2)
 
 debug: main.c $(LIBGIT2)
 	$(CC) -g -O0 -Ivendor/libgit2/include main.c $(LIBGIT2) -o bashlinedbg
+
+setup: bashline
+	mkdir -p "$(HOME)/.local/bin"
+	install -m 755 bashline "$(HOME)/.local/bin/bashline"
+	@if [ ! -e "$(HOME)/.bashrc" ]; then touch "$(HOME)/.bashrc"; fi
+	@if ! grep -Fq '# >>> bashline >>>' "$(HOME)/.bashrc"; then \
+		quote="'"; \
+		if [ -s "$(HOME)/.bashrc" ]; then printf '\n' >> "$(HOME)/.bashrc"; fi; \
+		printf '%s\n%s\n%s\n' \
+			'# >>> bashline >>>' \
+			"PROMPT_COMMAND=$${quote}PS1=\"\$$(\"\$$HOME/.local/bin/bashline\" \"\$$?\")\"$${quote}" \
+			'# <<< bashline <<<' >> "$(HOME)/.bashrc"; \
+	fi
 
 $(LIBGIT2):
 	cmake -S vendor/libgit2 -B vendor/libgit2/build -DCMAKE_BUILD_TYPE=Release \
